@@ -1,52 +1,19 @@
-import csv
 import sys
-from dataclasses import dataclass
-from decimal import Decimal
 from typing import Iterable
 
-
-class WrongNumberOfArgumentsError(TypeError):
-    pass
-
-
-class UnsupportedTransactionTypeError(TypeError):
-    pass
-
-
-def load_and_prepare_data(filename: str):
-    with open(filename, 'r') as csv_data:
-        csv_data = csv.DictReader(csv_data)
-        for row in csv_data:
-            clean_row = {}
-            for key, val in row.items():
-                if key.strip() == 'amount':
-                    clean_row[key.strip()] = Decimal(val.strip())
-                elif key.strip() == 'tx' or key.strip() == 'client':
-                    clean_row[key.strip()] = int(val.strip())
-                else:
-                    clean_row[key.strip()] = val.strip()
-            yield clean_row
-
-
-@dataclass
-class ClientAccount:
-    available: Decimal
-    held: Decimal
-    total: Decimal
-    locked: Decimal
-
-    def deposit(self, amount):
-        self.total += amount
-        self.available += amount
+from utils import ClientAccount, DisputeHistory, TransactionHistory, UnsupportedTransactionTypeError, \
+    WrongNumberOfArgumentsError, load_and_prepare_data
 
 
 class PaymentEngine:
     def __init__(self, transactions_data: Iterable):
         self.__storage = {}
+        self.__transactions_history = {}
         self.__transactions_data = transactions_data
-        self.transaction_types = ['deposit', 'withdrawal']
+        self.__dispute_history = {}
+        self.transaction_types = ['deposit', 'withdrawal', 'dispute', 'resolve', 'chargeback']
 
-    def count_it(self):  # TODO: name to be changed
+    def run_engine(self):
         for transaction in self.__transactions_data:
             if transaction['client'] in self.__storage:
                 self.make_transaction(transaction)
@@ -58,18 +25,67 @@ class PaymentEngine:
         if transaction['type'] not in self.transaction_types:
             raise UnsupportedTransactionTypeError("Unsupported transaction type found in csv file")
         if transaction['type'] == 'deposit':
-            self.__storage[transaction['client']].deposit(transaction['amount'])
-        if transaction['type'] == 'another_transaction':  # TODO: to be continued
-            pass
+            if transaction['tx'] not in self.__transactions_history:
+                if not self.__storage[transaction['client']].locked:
+                    self.save_transaction_in_history(transaction)
+                    self.__storage[transaction['client']].deposit(transaction['amount'])
+        if transaction['type'] == 'withdrawal':
+            if transaction['tx'] not in self.__transactions_history:
+                if not self.__storage[transaction['client']].locked:
+                    self.save_transaction_in_history(transaction)
+                    self.__storage[transaction['client']].withdraw(transaction['amount'])
+        if transaction['type'] == 'dispute':
+            if transaction['tx'] in self.__transactions_history:
+                transaction_disputed = self.get_transaction_by_tx(transaction['tx'])
+                if transaction['client'] == transaction_disputed.client:
+                    self.save_dispute_in_history(transaction)
+                    self.__storage[transaction['client']].dispute(self.get_transaction_by_tx(transaction['tx']))
+        if transaction['type'] == 'resolve':
+            if transaction['tx'] in self.__transactions_history:
+                transaction_disputed = self.get_transaction_by_tx(transaction['tx'])
+                if transaction['client'] == transaction_disputed.client:
+                    if transaction['tx'] in self.__dispute_history and \
+                            self.__dispute_history[transaction['tx']].status == 'ongoing':
+                        self.__storage[transaction['client']].resolve_dispute(
+                            self.get_transaction_by_tx(transaction['tx']))
+                        self.__dispute_history[transaction['tx']].status = 'resolve'
+        if transaction['type'] == 'chargeback':
+            if transaction['tx'] in self.__transactions_history:
+                transaction_disputed = self.get_transaction_by_tx(transaction['tx'])
+                if transaction['client'] == transaction_disputed.client:
+                    if transaction['tx'] in self.__dispute_history and \
+                            self.__dispute_history[transaction['tx']].status == 'ongoing':
+                        self.__storage[transaction['client']].chargeback_dispute(
+                            self.get_transaction_by_tx(transaction['tx']))
+                        self.__dispute_history[transaction['tx']].status = 'chargeback'
 
     def create_new_user(self, client_id: int):
-        self.__storage[client_id] = ClientAccount(**{'available': Decimal('0'), 'held': Decimal('0'),
-                                                     'total': Decimal('0'), 'locked': Decimal('0')})
+        self.__storage[client_id] = ClientAccount(**{'available': 0.0, 'held': 0.0,
+                                                     'total': 0.0, 'locked': False})
 
-    def prepare_stdout(self):
+    def save_transaction_in_history(self, transaction):
+        if transaction['type'] == 'deposit' or transaction['type'] == 'withdrawal':
+            self.__transactions_history[transaction['tx']] = \
+                TransactionHistory(**{'type': transaction['type'], 'client': transaction['client'],
+                                      'amount': transaction['amount']})
+        else:
+            self.__transactions_history[transaction['tx']] = \
+                TransactionHistory(**{'type': transaction['type'], 'client': transaction['client'],
+                                      'amount': 0.0})
+
+    def save_dispute_in_history(self, transaction):
+        self.__dispute_history[transaction['tx']] = DisputeHistory(**{'client': transaction['client'],
+                                                                      'status': 'ongoing'})
+
+    def get_transaction_by_tx(self, tx: int):
+        if tx in self.__transactions_history:
+            return self.__transactions_history[tx]
+
+    def print_results(self):
         print("client,available,held,total,locked")
         for client, entry in self.__storage.items():
-            print(f"{client},{entry.available},{entry.held},{entry.total},{entry.locked}")
+            print(f"{client},{round(entry.available, 4)},{round(entry.held, 4)},"
+                  f"{round(entry.total, 4)},{str(entry.locked).lower()}")
 
 
 if __name__ == '__main__':
@@ -77,10 +93,7 @@ if __name__ == '__main__':
         raise WrongNumberOfArgumentsError(f"PaymentEngine app takes only 1 argument, "
                                           f"the csv file with transactions data. "
                                           f"Incorrect number of arguments passed of {len(sys.argv)}")
-
     transactions = load_and_prepare_data(sys.argv[1])
     engine = PaymentEngine(transactions)
-    engine.count_it()
-    engine.prepare_stdout()
-
-    # payment_engine = PaymentEngine(transactions)
+    engine.run_engine()
+    engine.print_results()
