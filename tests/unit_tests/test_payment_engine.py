@@ -1,5 +1,3 @@
-import sys
-
 import pytest
 
 from payment_engine import PaymentEngine

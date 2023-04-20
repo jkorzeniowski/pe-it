@@ -6,6 +6,12 @@ from utils import ClientAccount, DisputeHistory, TransactionHistory, Unsupported
 
 
 class PaymentEngine:
+    """
+    PaymentEngine - logic responsible for calculation of the clients bank accounts statuses
+    given set of transactions data.
+
+    :param transactions_data - raw data containing type, client, tx, amount data set
+    """
     def __init__(self, transactions_data: Iterable):
         self.__storage = {}
         self.__transactions_history = {}
@@ -15,11 +21,9 @@ class PaymentEngine:
 
     def run_engine(self):
         for transaction in self.__transactions_data:
-            if transaction['client'] in self.__storage:
-                self.make_transaction(transaction)
-            else:
+            if transaction['client'] not in self.__storage:
                 self.create_new_user(transaction['client'])
-                self.make_transaction(transaction)
+            self.make_transaction(transaction)
 
     def make_transaction(self, transaction: dict):
         if transaction['type'] not in self.transaction_types:
